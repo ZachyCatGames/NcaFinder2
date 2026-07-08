@@ -1,0 +1,4 @@
+source/NcaKeys.inc
+build/*
+.vscode/*
+test files/*
