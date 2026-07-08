@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
 
         /* Process the NCA. */
         NcaProcessor ncaProc(imageStorage, offset, useDevKeys, StdoutLogger);
-        //ncaProc.CopyContiguous();
+        ncaProc.CopyContiguous();
         if (!disableDefrag)
             ncaProc.Process();
     }

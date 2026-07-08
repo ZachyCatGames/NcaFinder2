@@ -260,7 +260,7 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
     /* Return the recovered list. */
     *pRecoveredList = std::move(m_recovered);
 
-    return true;
+    return recAll;
 }
 
 void HISha256Processor::FillRecoveredFromCorrupt(const std::list<Extents<u64>>& corrupt, u64 layerStart, u64 layerSize) {

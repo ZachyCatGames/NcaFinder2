@@ -268,7 +268,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
     /* Return the recovered list. */
     *pRecoveredList = std::move(m_recovered);
 
-    return true;
+    return recAll;
 }
 
 std::vector<Sha256::Hash> IvfcSectionProcessor::ReadHashes(int level) {

@@ -121,7 +121,7 @@ NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t nca
     /* Open the NCA file. */
     {
         std::string ncaPath = this->CreateOutFilePath(".nca");
-        m_ncaFile = std::fopen(ncaPath.c_str(), "r+b");
+        m_ncaFile = std::fopen(ncaPath.c_str(), "w+b");
         if (m_ncaFile == nullptr) {
             throw DumperException("Failed to create NCA file '{}'", ncaPath);
         }

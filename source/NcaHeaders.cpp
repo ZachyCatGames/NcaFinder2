@@ -7,7 +7,7 @@ namespace {
 
 } // namespace
 
-const uint8_t* GetNcaHeaderKey(bool isDev) { return g_HeaderKey[isDev]; }
+const uint8_t* GetNcaHeaderKey(bool isDev) { return g_HeaderKey[(int)isDev]; }
 
 void NcaHeader::Print() const{
     char magicTerminated[5];

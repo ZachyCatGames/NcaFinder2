@@ -195,8 +195,6 @@ bool BlockRecoverer::Recover(RecoveredList* recoveredList, const ExtentList& mis
         m_pLogger->print("Failed to recover 0x{:x} bytes at offset 0x{:x}\n", l.GetSize(), l.GetStart());
     }
 
-    bool recAll = true;
-
     /* Cleanup. */
     m_missing.clear();
     if (recoveredList)
@@ -204,7 +202,7 @@ bool BlockRecoverer::Recover(RecoveredList* recoveredList, const ExtentList& mis
     else
         m_recovered.clear();
 
-    return recAll;
+    return m_failed.empty();
 }
 
 /* 
@@ -301,9 +299,12 @@ int BlockRecoverer::AnalyzeBlock(const std::byte* pBlock, u64 clusterId) {
         Sha256::Hash shaHash;
         const u64 compareSize = std::min(size, m_blockSize);
         ComputeSha256Sum(&shaHash, m_workBuffer.data(), compareSize);
+        if (compareSize != m_blockSize) {
+            m_pLogger->print("Hello!\n");
+        }
 
         /* Does it match the target hash? */
-        decltype(rec) nextRec;
+        auto nextRec = std::next(rec);;
         const auto& targetHash = this->GetHashForOffset(start);
         if (!std::memcmp(&shaHash, &targetHash, sizeof(shaHash))) {
             /* Log that we recovered a block. */
@@ -364,10 +365,6 @@ int BlockRecoverer::AnalyzeBlock(const std::byte* pBlock, u64 clusterId) {
                 start,
                 clusterId * CLUSTER_SIZE
             );
-
-            nextRec = std::next(rec);
-        } else {
-            nextRec = std::next(rec);
         }
 
         rec = nextRec;
@@ -487,10 +484,13 @@ void BlockRecoverer::UpdateMissingList() {
             m->ClearNewFlag();
             ++m;
         } else if (m->GetSize() <= m_blockSize) {
+            /* Update the failed list. */
+            m_failed.push_back(m->GetExtents());
+
+            /* Remove the extent. */
             m = m_missing.erase(m);
         } else {
             /* Split the extent. */
-            // TODO: Migrate to fragment list
             m = this->SplitAndRemoveMissingExtent(m);
         }
     }
@@ -500,8 +500,9 @@ void BlockRecoverer::UpdateFragmentList() {
     auto f = m_fragments.begin();
     while (f != m_fragments.end()) {
         if (f->GetStartPieceOffset() == 0 && !m_blk0Reverted) {
-            /* Revert block 0 start to its initial state. */
             assert(m_pBlkZeroRec != nullptr);
+
+            /* Revert block 0 start to its initial state. */
             this->RevertBlockZeroStart();
         } else if (f->IsNew()) {
             f->ClearNewFlag();
@@ -511,6 +512,9 @@ void BlockRecoverer::UpdateFragmentList() {
             if (f->GetPostExtent().GetSize() > m_blockSize) {
                 this->SplitMissingExtent(f->GetPostExtent());
             }
+
+            /* Update the failed list. */
+            m_failed.emplace_back(f->GetStartPieceOffset(), f->GetBlockSize());
 
             /* Remove the fragment entry. */
             f = m_fragments.erase(f);
@@ -535,6 +539,7 @@ void BlockRecoverer::SplitMissingExtent(const MissingExtent& missing) {
 template<typename Iter>
 Iter BlockRecoverer::SplitAndRemoveMissingExtent(Iter ext) {
     this->SplitMissingExtent(ext->Forwarded(m_blockSize));
+    m_failed.emplace_back(ext->GetStart(), std::min(ext->GetSize(), m_blockSize));
     return m_missing.erase(ext);
 }
 

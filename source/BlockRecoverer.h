@@ -57,6 +57,8 @@ private:
         [[nodiscard]] constexpr bool IsNew() const noexcept { return m_isNew; }
 
         constexpr void ClearNewFlag() noexcept { m_isNew = false; }
+
+        constexpr const auto& GetExtents() const noexcept { return m_extents; }
     private:
         InnerExtentsType m_extents;
         bool m_isNew;
@@ -192,6 +194,8 @@ private:
     MissingExtentList m_missing;
     std::list<FragmentInfo> m_fragments;
     RecoveredList m_recovered;
+    std::list<Extents<u64>> m_failed;
+
     RecoveredRecord m_curRecExt;
     u64 m_expectedCluster;
     u64 m_expectedSecOffs;
