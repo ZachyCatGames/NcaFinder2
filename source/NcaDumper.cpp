@@ -7,8 +7,9 @@
 #include <cerrno>
 #include <argparse/argparse.hpp>
 #include "FileStorage.h"
-#include "Log.h"
+#include <print>
 #include "NcaProcessor.h"
+#include "StdLogger.h"
 
 /*
  * This tool attempts data recovery on a per-NCA basis.
@@ -47,7 +48,7 @@ int Test() {
 
     auto imageStorage = std::make_shared<FileStorage>(imageFile);
 
-    NcaProcessor ncaProc(imageStorage, 0xc000, true);
+    NcaProcessor ncaProc(imageStorage, 0xc000, true, StdoutLogger);
     ncaProc.CopyContiguous();
     ncaProc.Process();
 
@@ -79,7 +80,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    g_LogLevel = LogLevel_Verbose;
+    //g_LogLevel = LogLevel_Verbose;
     const bool useDevKeys    = program["--development"] == true;
     const bool disableDefrag = program["--no-defrag"] == true;
     std::string ncaListPath  = program.get<std::string>("--nca-list-path");
@@ -144,13 +145,13 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        LOG("Processing {} ({:016x}):\n", magic.c_str(), programId);
-        LOG("\tOffset: 0x{:x}\n", offset);
-        LOG("\tSize:   0x{:x}\n", size);
+        std::print("Processing {} ({:016x}):\n", magic.c_str(), programId);
+        std::print("\tOffset: 0x{:x}\n", offset);
+        std::print("\tSize:   0x{:x}\n", size);
 
         /* Process the NCA. */
-        NcaProcessor ncaProc(imageStorage, offset, useDevKeys);
-        ncaProc.CopyContiguous();
+        NcaProcessor ncaProc(imageStorage, offset, useDevKeys, StdoutLogger);
+        //ncaProc.CopyContiguous();
         if (!disableDefrag)
             ncaProc.Process();
     }

@@ -26,6 +26,8 @@ void DebugLog(const char* fmt, Args&&... args) {
     }
 }
 
+bool useDevKeys;
+
 uint8_t* g_primaryBuffer;
 uint8_t* g_secondaryBuffer;
 
@@ -84,7 +86,7 @@ void ReadWorker(FILE* input_file, size_t input_size, size_t max_chunk_size) {
 
 void ScanWorker(FILE* csv_file) {
     /* Setup decryptor. */
-    NintendoAesXtsDecryptor ctx(g_HeaderKey[1][0], 0x20, 0x200);
+    NintendoAesXtsDecryptor ctx(GetNcaHeaderKey(useDevKeys), 0x20, 0x200);
 
     while (true) {
         /* Wait for the read worker to finish. */
@@ -177,7 +179,7 @@ int main(int argc, char** argv) {
     g_debugLog = program["--verbose"] == true;
     g_fsSectorSize = program.get<size_t>("--sector-size");
     size_t sectorsPerRead = program.get<size_t>("--sectors-per-read");
-    bool useDevKeys = program["--development"] == true;
+    useDevKeys = program["--development"] == true;
     auto csvPath = program.get<std::string>("--out-csv");
     auto inFilePath = program.get<std::string>("--in-file");
 

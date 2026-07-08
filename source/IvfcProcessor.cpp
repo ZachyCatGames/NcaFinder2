@@ -8,7 +8,6 @@
 #include "Common.h"
 #include "ProgressBar.h"
 #include "Sha256.h"
-#include "Log.h"
 #include "SubDecryptor.h"
 #include "SubStorage.h"
 #include "Util.h"
@@ -30,7 +29,7 @@ void IvfcSectionProcessor::HashDataReader::Validate() const {
     }
 }
 
-IvfcSectionProcessor::IvfcSectionProcessor(NcaProcessor* pParent, SectionInfoReader sectInfo, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, FILE* logFile) :
+IvfcSectionProcessor::IvfcSectionProcessor(NcaProcessor* pParent, SectionInfoReader sectInfo, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, const std::shared_ptr<Logger> pLogger) :
     m_pParent(pParent),
     m_sectInfo(sectInfo),
     m_hashData(m_sectInfo.GetIntegrityMetaData()),
@@ -38,14 +37,14 @@ IvfcSectionProcessor::IvfcSectionProcessor(NcaProcessor* pParent, SectionInfoRea
     m_pRawStorage(std::move(pRawStorage)),
     m_pImageStorage(std::move(pInputStorage)),
     m_pDecryptor(std::move(pSecBlockDec)),
-    m_logFile(logFile)
+    m_pLogger(pLogger)
 {
     assert(m_pParent != nullptr);
     assert(m_pDecStorage != nullptr);
     assert(m_pRawStorage != nullptr);
     assert(m_pImageStorage != nullptr);
     assert(m_pDecryptor != nullptr);
-    assert(m_logFile);
+    assert(pLogger != nullptr);
     assert(sectInfo.GetHashType() == FsHeader::HashType::HierarchicalIntegrityHash);
 
     m_hashData.Validate();
@@ -81,7 +80,7 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
     /* Get block count. */
     const u64 dataSize = m_hashData[level].size;
 
-    FLOG_VERBOSE(m_logFile, "Data Size: 0x{:x}\n", dataSize);
+    //FLOG_VERBOSE(m_logFile, "Data Size: 0x{:x}\n", dataSize);
 
     std::vector<std::byte> levelData(CLUSTERS_PER_READ * CLUSTER_SIZE);
 
@@ -89,8 +88,8 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
         throw DumperException("Zero blocks?");
     }
 
-    std::print(m_logFile, "Scanning for corrupt blocks...\n");
-    std::fflush(m_logFile);
+    m_pLogger->print("Scanning for corrupt blocks...\n");
+    //std::fflush(m_logFile);
     std::this_thread::sleep_for(100ms); // race condition hack
     PrintProgressBar(0.0);
 
@@ -129,7 +128,7 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
             const u64 recSize = std::min(remaining, m_blockSize);
             if (std::memcmp(&shaHash, &hashes[offset / CLUSTER_SIZE], Sha256::Hash::Size)) {
                 ClearProgressBar();
-                FLOG_VERBOSE(m_logFile, "Offset 0x{:x} in level {} corrupt.\n", offset, level);
+                m_pLogger->print("Offset 0x{:x} in level {} corrupt.\n", offset, level);
 
                 /* Start a new extent or append to the current one. */
                 if (inCorrupt) {
@@ -163,7 +162,7 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
 
     /* Announce scanning completion. */
     ClearProgressBar();
-    std::print(m_logFile, "Scan end. Found {} corrupt blocks.\n", corruptCount);
+    m_pLogger->print("Scan end. Found {} corrupt blocks.\n", corruptCount);
 
     return corruptExtents;
 }
@@ -184,7 +183,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
 
     /* Check if we need to recovery level 0. */
     if (std::memcmp(&l0Hash, &m_hashData.MasterHash(), Sha256::Hash::Size)) {
-        std::print(m_logFile, "Master Hash Mismatch.\n");
+        m_pLogger->print("Master Hash Mismatch.\n");
 
         /* TODO: Accomodate cases where level zero spans more than 1 block (I don't think this ever happens). */
         std::list<Extents<u64>> records {
@@ -202,7 +201,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
             m_blockSize,
             0,
             sectionStart + m_hashData[0].offset,
-            m_logFile
+            m_pLogger
         );
         if (recover.Recover(&rec, std::move(records), mHash) == 0) {
             throw DumperException("Failed to recover level 0.\n");
@@ -219,7 +218,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
     /* Check lower levels. */
     bool recAll = true;
     for (int i = 0; i < FsHeader::IntegrityMetaInfo::NumberOfLevels - 1; i++) {
-        std::print(m_logFile, "Scanning level {} using level {} hashes.\n", i+1, i);
+        m_pLogger->print("Scanning level {} using level {} hashes.\n", i+1, i);
 
         const auto& hashLevelInfo = m_hashData[i];
         const auto& dataLevelInfo = m_hashData[i+1];
@@ -244,7 +243,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
                 m_blockSize,
                 m_sectInfo.GetMisalignment(),
                 sectionStart + hashLevelInfo.offset,
-                m_logFile
+                m_pLogger
             );
             
             if (!recover.Recover(&rec, std::move(records), hashes))

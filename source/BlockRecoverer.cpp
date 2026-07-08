@@ -3,7 +3,6 @@
 #include "ErrorCode.h"
 #include "NcaHeaders.h"
 #include "ProgressBar.h"
-#include "Log.h"
 #include "Sha256.h"
 #include "Util.h"
 #include <bit>
@@ -73,11 +72,11 @@ auto BlockRecoverer::FragmentInfo::AddPostExtentToMissingList() const {
     return std::prev(m_pParent->m_missing.cend());
 }
 
-BlockRecoverer::BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pSecBlockDec, u64 blockSize, u64 blockOffset, u64 imageStartOffset, FILE* logFile) :
+BlockRecoverer::BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pSecBlockDec, u64 blockSize, u64 blockOffset, u64 imageStartOffset, const std::shared_ptr<Logger> pLogger) :
     m_pSectionStorage(pSectStorage),
     m_pImageStorage(pImageStorage),
     m_pDecryptor(pSecBlockDec),
-    m_logFile(logFile),
+    m_pLogger(pLogger),
     m_blockSize(blockSize),
     m_blockOffset(blockOffset),
     m_curRecExt(),
@@ -90,9 +89,13 @@ BlockRecoverer::BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, 
     assert(m_pSectionStorage != nullptr);
     assert(m_pImageStorage != nullptr);
     assert(m_pDecryptor != nullptr);
-    assert(m_logFile != nullptr);
+    assert(m_pLogger != nullptr);
     assert(std::popcount(blockSize) == 1);
     assert(blockOffset < blockSize);
+
+    if (blockSize < CLUSTER_SIZE) {
+        throw DumperException("Blocks smaller than cluster size not supported");
+    }
 
     /* Get storage sizes. */
     m_pImageStorage->GetSize(&m_imageStorageSize);
@@ -126,7 +129,8 @@ BlockRecoverer::BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, 
     assert(m_clustersBetweenBlock > 0);
     assert(m_clusterCount > 0);
     assert(std::popcount(m_alignedBlockSize) == 1); // pow of 2
-    assert(m_endCluster > 0 && m_endCluster < m_clusterCount);
+    assert(m_endCluster > 0);
+    assert(m_endCluster <= m_clusterCount);
 }
 
 bool BlockRecoverer::Recover(RecoveredList* recoveredList, const ExtentList& missing, const std::vector<Sha256::Hash>& hashes) {
@@ -154,22 +158,22 @@ bool BlockRecoverer::Recover(RecoveredList* recoveredList, const ExtentList& mis
     int recovered = 0;
     while (!this->IsDone()) {
         /* Announce pass start. */
-        std::print(m_logFile, "Pass {}\n", pass);
+        m_pLogger->print("Pass {}\n", pass);
 
         /* Log current extents. */
-        std::print(m_logFile, "Current Extents:\n");
+        m_pLogger->print("Current Extents:\n");
         for (const auto& l : m_missing) {
-            std::print(m_logFile, "\t0x{:x} - 0x{:x} (0x{:x})\n", l.GetStart(), l.GetEnd(), l.GetSize());
+            m_pLogger->print("\t0x{:x} - 0x{:x} (0x{:x})\n", l.GetStart(), l.GetEnd(), l.GetSize());
         }
-        std::print(m_logFile, "Current block fragments:\n");
+        m_pLogger->print("Current block fragments:\n");
         for (const auto& f : m_fragments) {
-            std::print(m_logFile, "\tstart=0x{:X}\n", f.GetStartPieceOffset());
+            m_pLogger->print("\tstart=0x{:X}\n", f.GetStartPieceOffset());
         }
 
         int rec = this->RecoverPass(m_imageStartOffset);
 
         /* Announce pass end. */
-        std::print(m_logFile, "Pass {} recoverd {} blocks\n", pass++, rec);
+        m_pLogger->print("Pass {} recoverd {} blocks\n", pass++, rec);
 
         /* Update the missing list. */
         this->UpdateMissingList();
@@ -184,11 +188,11 @@ bool BlockRecoverer::Recover(RecoveredList* recoveredList, const ExtentList& mis
     }
 
     /* Log number of recovered blocks. */
-    std::print(m_logFile, "Recovered {} blocks.\n", recovered);
+    m_pLogger->print("Recovered {} blocks.\n", recovered);
 
     /* Log unrecovered extents. */
     for (const auto l : m_missing) {
-        std::print(m_logFile, "Failed to recover 0x{:x} bytes at offset 0x{:x}\n", l.GetSize(), l.GetStart());
+        m_pLogger->print("Failed to recover 0x{:x} bytes at offset 0x{:x}\n", l.GetSize(), l.GetStart());
     }
 
     bool recAll = true;
@@ -213,12 +217,12 @@ bool BlockRecoverer::Recover(RecoveredList* recoveredList, const ExtentList& mis
  * by a couple FS blocks.
  */
 int BlockRecoverer::RecoverPass(u64 startHint) {
-    FLOG_VERBOSE(m_logFile, "fsBlockCount     = 0x{:x}\n", m_clusterCount);
-    FLOG_VERBOSE(m_logFile, "fsBlocksPerBlock = 0x{:x}\n", m_clustersPerBlock);
-    FLOG_VERBOSE(m_logFile, "alignedBlockSize = 0x{:x}\n", m_alignedBlockSize);
-    FLOG_VERBOSE(m_logFile, "startHint        = 0x{:x} (0x{:x})\n", startHint, startHint / CLUSTER_SIZE);
+    //FLOG_VERBOSE(m_logFile, "fsBlockCount     = 0x{:x}\n", m_clusterCount);
+    //FLOG_VERBOSE(m_logFile, "fsBlocksPerBlock = 0x{:x}\n", m_clustersPerBlock);
+    //FLOG_VERBOSE(m_logFile, "alignedBlockSize = 0x{:x}\n", m_alignedBlockSize);
+    //FLOG_VERBOSE(m_logFile, "startHint        = 0x{:x} (0x{:x})\n", startHint, startHint / CLUSTER_SIZE);
 
-    FLOG_VERBOSE(m_logFile, "Scanning through {} blocks (0x{:x} bytes)\n", m_clusterCount, m_imageStorageSize);
+    //FLOG_VERBOSE(m_logFile, "Scanning through {} blocks (0x{:x} bytes)\n", m_clusterCount, m_imageStorageSize);
 
     PrintProgressBar(0.0f);
 
@@ -303,7 +307,7 @@ int BlockRecoverer::AnalyzeBlock(const std::byte* pBlock, u64 clusterId) {
         const auto& targetHash = this->GetHashForOffset(start);
         if (!std::memcmp(&shaHash, &targetHash, sizeof(shaHash))) {
             /* Log that we recovered a block. */
-            std::print(m_logFile, "Recovered 0x{:x} from image offset 0x{:x}\n", start, clusterId * CLUSTER_SIZE);
+            m_pLogger->print("Recovered 0x{:x} from image offset 0x{:x}\n", start, clusterId * CLUSTER_SIZE);
             
             /* Increment recovered count.*/
             recovered++;
@@ -355,12 +359,14 @@ int BlockRecoverer::AnalyzeBlock(const std::byte* pBlock, u64 clusterId) {
             /* Skip this block for now. */
             m_missing.erase(rec);
 
-            std::print(m_logFile,
+            m_pLogger->print(
                 "Found block fragment: section_offset=0x{:X}; start_image_offset=0x{:X}\n",
                 start,
                 clusterId * CLUSTER_SIZE
             );
 
+            nextRec = std::next(rec);
+        } else {
             nextRec = std::next(rec);
         }
 
@@ -384,7 +390,7 @@ int BlockRecoverer::CheckFragments(std::byte* pClusters, u64 clusterId) {
             const u64 writeSize = this->GetRequiredWriteSize(start);
 
             /* Log our findings. */
-            std::print(m_logFile,
+            m_pLogger->print(
                 "Resolved fragment: section_offset=0x{:X}; start_image_offset=0x{:X}; resume_image_offset=0x{:X}\n",
                 start,
                 f->GetStartCluster(),

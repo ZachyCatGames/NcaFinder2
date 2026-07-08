@@ -8,6 +8,7 @@
 #include "Sha256.h"
 #include "Extents.h"
 #include "LocationRecord.h"
+#include "Logger.h"
 
 // TODO: sha3256
 class BlockRecoverer {
@@ -16,7 +17,7 @@ public:
     //using ExtentList = std::list<CorruptBlockInfo>;
 
     BlockRecoverer() : m_pSectionStorage(nullptr) {}
-    BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pDecryptor, u64 blockSize, u64 blockOffset, u64 imageStartOffset, FILE* logFile);
+    BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pDecryptor, u64 blockSize, u64 blockOffset, u64 imageStartOffset, const std::shared_ptr<Logger> pLogger);
 
     bool Recover(RecoveredList* recoveredList, const ExtentList& missing, const std::vector<Sha256::Hash>& hashes);
 private:
@@ -181,7 +182,7 @@ private:
     u64 m_startPieceOffs;
     u64 m_startPieceSize;
 
-    FILE* m_logFile;
+    std::shared_ptr<Logger> m_pLogger;
 
     std::unique_ptr<BlockZeroRecoveryData> m_pBlkZeroRec;
     bool m_blk0Reverted;

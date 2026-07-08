@@ -6,7 +6,6 @@
 #include "NcaProcessor.h"
 #include "ProgressBar.h"
 #include "Sha256.h"
-#include "Log.h"
 #include "SubDecryptor.h"
 #include "SubStorage.h"
 #include "Util.h"
@@ -28,14 +27,15 @@ void HISha256Processor::HashDataReader::Validate() const {
     }
 
     /* Each layer must start at a multiple of the FS block size. */
+    /*
     for (int i = 0; i < m_pData->layerCount; i++) {
         if (m_pData->region[i].offset % CLUSTER_SIZE != 0) {
             throw DumperException("Region {} is not aligned to FAT cluster size", i);
         }
-    }
+    } */
 }
 
-HISha256Processor::HISha256Processor(NcaProcessor* pParent, SectionInfoReader infoReader, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, FILE* logFile) :
+HISha256Processor::HISha256Processor(NcaProcessor* pParent, SectionInfoReader infoReader, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, const std::shared_ptr<Logger> pLogger) :
     m_pParent(pParent),
     m_sectInfo(infoReader),
     m_hashData(m_sectInfo.GetHierarchicalSha256Data()),
@@ -43,27 +43,27 @@ HISha256Processor::HISha256Processor(NcaProcessor* pParent, SectionInfoReader in
     m_pRawStorage(std::move(pRawStorage)),
     m_pImageStorage(std::move(pInputStorage)),
     m_pDecryptor(std::move(pSecBlockDec)),
-    m_logFile(logFile)
+    m_pLogger(pLogger)
 {
     assert(m_pParent != nullptr);
     assert(m_pDecStorage != nullptr);
     assert(m_pRawStorage != nullptr);
     assert(m_pImageStorage != nullptr);
     assert(m_pDecryptor != nullptr);
-    assert(m_logFile != nullptr);
+    assert(m_pLogger != nullptr);
     assert(infoReader.GetHashType() == FsHeader::HashType::HierarchicalSha256Hash);
 
     /* Verify hash data. */
     m_hashData.Validate();
 
     m_blockSize = m_hashData.BlockSize();
-    FLOG_VERBOSE(m_logFile, "Block size: 0x{}\n", m_blockSize);
+    m_pLogger->print("Block size: 0x{}\n", m_blockSize);
 
     /* Setup sub storages. */
     const u64 alignedHashSize = AlignUp(m_hashData[0].size, CLUSTER_SIZE);
     const u64 alignedDataSize = AlignUp(m_hashData[1].size, CLUSTER_SIZE);
-    std::print(m_logFile, "hash region: start: {:x}; size: {:x}\n", m_hashData[0].offset, alignedHashSize);
-    std::print(m_logFile, "data region: start: {:x}; size: {:x}\n", m_hashData[1].offset, alignedDataSize);
+    m_pLogger->print("hash region: start: {:x}; size: {:x}\n", m_hashData[0].offset, alignedHashSize);
+    m_pLogger->print("data region: start: {:x}; size: {:x}\n", m_hashData[1].offset, alignedDataSize);
     m_hashRawStorage = SubStorage(m_pRawStorage.get(), m_hashData[0].offset, alignedHashSize);
     m_dataRawStorage = SubStorage(m_pRawStorage.get(), m_hashData[1].offset, alignedDataSize);
     m_hashDecStorage = SubStorage(m_pDecStorage.get(), m_hashData[0].offset, alignedHashSize);
@@ -87,8 +87,8 @@ std::list<Extents<u64>> HISha256Processor::ScanForCorruptDataBlocks(const std::v
 
     const size_t dataSize = m_hashData[1].size;
 
-    std::print(m_logFile, "Scanning data region for corrupt blocks...\n");
-    std::fflush(m_logFile);
+    m_pLogger->print("Scanning data region for corrupt blocks...\n");
+    //std::fflush(m_logFile);
     std::this_thread::sleep_for(100ms); // race condition hack
     PrintProgressBar(0.0f);
 
@@ -124,7 +124,7 @@ std::list<Extents<u64>> HISha256Processor::ScanForCorruptDataBlocks(const std::v
             ComputeSha256Sum(&hash, buffer.data() + i * m_blockSize, hashSize);
             if (std::memcmp(&hash, &targetHash, sizeof(hash))) {
                 ClearProgressBar();
-                FLOG_VERBOSE(m_logFile, "Block {} in data region is corrupt\n", offset);
+                //m_pLogger->print("Block {} in data region is corrupt\n", offset);
                 
                 /* Start a new extent or append to the current one. */
                 if (inExtent) {
@@ -162,7 +162,7 @@ std::list<Extents<u64>> HISha256Processor::ScanForCorruptDataBlocks(const std::v
 
     /* Announce scanning completion. */
     ClearProgressBar();
-    std::print(m_logFile, "Finished scanning... {} corrupt blocks found.\n", corrupt);
+    m_pLogger->print("Finished scanning... {} corrupt blocks found.\n", corrupt);
 
     return extents;
 }
@@ -184,7 +184,8 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
     Sha256::Hash hash;
     ComputeSha256Sum(&hash, hashes.data(), m_hashData[0].size);
     if (std::memcmp(&hash, &m_hashData.MasterHash(), sizeof(hash))) {
-        std::print(m_logFile, "Master hash mismatch\n");
+        m_pLogger->print("Master hash mismatch\n");
+        fflush(stdout);
         
         /* Try recovering the hash region. */
         std::list<Extents<u64>> records {
@@ -202,7 +203,7 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
             m_hashData[0].size,
             0,
             sectionStart + m_hashData[0].offset,
-            m_logFile
+            m_pLogger
         );
 
         RecoveredList rec;
@@ -225,7 +226,7 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
 
     /* Fill the gaps in the recovered list. */
     this->FillRecoveredFromCorrupt(records, m_hashData[1].offset, m_hashData[1].size);
-    std::print(m_logFile, "filled\n");
+    m_pLogger->print("filled\n");
 
     /* Attempt data recovery. */
     bool recAll = true; 
@@ -239,7 +240,7 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
             m_blockSize,
             0,
             sectionStart + m_hashData[1].offset,
-            m_logFile
+            m_pLogger
         );
         recAll = recover.Recover(&rec, std::move(records), hashes);
     

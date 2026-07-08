@@ -8,6 +8,7 @@
 #include "IStorage.h"
 #include "ISectionProcessor.h"
 #include "NcaHeaders.h"
+#include "Logger.h"
 #include "MultiLogger.h"
 
 class NcaProcessor {
@@ -36,7 +37,7 @@ public:
         const FsHeader* m_pHeader;
     }; // class SectionInfoReader
 public:
-    NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t ncaOffset, bool isDev);
+    NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t ncaOffset, bool isDev, const std::shared_ptr<Logger>& pLogger);
 
     ~NcaProcessor();
 
@@ -56,10 +57,8 @@ private:
     std::byte m_aesCtrKey[0x10];
 
     FILE* m_ncaFile;
-    FILE* m_logFile;
 
-    std::optional<MultiLogger> m_logger;
-    FILE* m_logOutput;
+    std::shared_ptr<MultiLogger> m_pLogger;
 
     RecoveredList m_recovered;
 

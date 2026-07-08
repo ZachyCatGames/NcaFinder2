@@ -11,6 +11,7 @@
 #include "Extents.h"
 #include "SubDecryptor.h"
 #include "SubStorage.h"
+#include "Logger.h"
 
 class NcaProcessor;
 
@@ -18,7 +19,7 @@ class IvfcSectionProcessor : public ISectionProcessor {
 public:
     using SectionInfoReader = NcaProcessor::SectionInfoReader;
 
-    IvfcSectionProcessor(NcaProcessor* pParent, SectionInfoReader sectInfo, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, FILE* logFile);
+    IvfcSectionProcessor(NcaProcessor* pParent, SectionInfoReader sectInfo, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, const std::shared_ptr<Logger> pLogger);
 
     bool Process(RecoveredList* pRecoveredList, u64 recoveryStartOffset) override;
 private:
@@ -75,5 +76,5 @@ private:
 
     u64 m_blockSize;
 
-    FILE* m_logFile;
+    std::shared_ptr<Logger> m_pLogger;
 };

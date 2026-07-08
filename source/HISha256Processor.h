@@ -13,13 +13,14 @@
 #include "SubDecryptor.h"
 #include "SubStorage.h"
 #include "Extents.h"
+#include "Logger.h"
 
 class NcaProcessor;
 
 class HISha256Processor : public ISectionProcessor {
 public:
     using SectionInfoReader = NcaProcessor::SectionInfoReader;
-    HISha256Processor(NcaProcessor* pParent, SectionInfoReader infoReader, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, FILE* logFile);
+    HISha256Processor(NcaProcessor* pParent, SectionInfoReader infoReader, std::shared_ptr<IStorage> pInputStorage, std::shared_ptr<IStorage> pRawStorage, std::shared_ptr<IStorage> pDecStorage, std::unique_ptr<IDecryptor>&& pSecBlockDec, const std::shared_ptr<Logger> pLogger);
 
     bool Process(RecoveredList* pRecoveredList, u64 recoveryStartOffset) override;
 private:
@@ -74,5 +75,5 @@ private:
 
     size_t m_blockSize;
 
-    FILE* m_logFile;
+    std::shared_ptr<Logger> m_pLogger;
 }; // class HISha256Processor

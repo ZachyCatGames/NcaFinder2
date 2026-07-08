@@ -26,9 +26,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(mbedtls)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(CMN_PLAT_SOURCE source/MultiLogger.posix.h source/MultiLogger.posix.cpp)
+    #set(CMN_PLAT_SOURCE source/MultiLogger.posix.h source/MultiLogger.posix.cpp)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(CMN_PLAT_SOURCE source/MultiLogger.win32.h source/MultiLogger.win32.cpp)
+    #set(CMN_PLAT_SOURCE source/MultiLogger.win32.h source/MultiLogger.win32.cpp)
 else()
     message(FATAL_ERROR "Unsupported OS")
 endif()
@@ -44,11 +44,14 @@ add_library(CommonUtils
     source/HISha256Processor.h source/HISha256Processor.cpp
     source/IvfcProcessor.h source/IvfcProcessor.cpp
     source/ProgressBar.h source/ProgressBar.cpp
+    source/MultiLogger.h source/MultiLogger.cpp
     source/NcaHeaders.h source/NcaHeaders.cpp
     source/NcaProcessor.h source/NcaProcessor.cpp
     source/PlaintextDecryptor.h source/PlaintextDecryptor.cpp
+    source/StdLogger.h source/StdLogger.cpp
     source/SubDecryptor.h source/SubDecryptor.cpp
     source/SubStorage.h source/SubStorage.cpp
+
     ${CMN_PLAT_SOURCE}
 )
 target_link_libraries(CommonUtils PUBLIC MbedTLS::mbedtls)

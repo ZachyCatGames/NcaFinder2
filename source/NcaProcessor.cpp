@@ -4,6 +4,7 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <print>
 #include <vector>
 #include "Aes.h"
 #include "AesCtrDecryptor.h"
@@ -12,12 +13,11 @@
 #include "FileStorage.h"
 #include "HISha256Processor.h"
 #include "IDecryptor.h"
-#include "MultiLogger.h"
 #include "IvfcProcessor.h"
-#include "Log.h"
 #include "NcaHeaders.h"
 #include "PlaintextDecryptor.h"
 #include "SubStorage.h"
+#include "StdLogger.h"
 
 namespace {
 
@@ -35,13 +35,17 @@ void why() {
     test.seekp(0x20000);
 }
 
-NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t ncaOffset, bool isDev) :
+NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t ncaOffset, bool isDev, const std::shared_ptr<Logger>& pLogger) :
     m_pImageStorage(std::move(pImageStorage)),
     m_ncaOffset(ncaOffset),
     m_plaintext(true)
 {
+    /* Add passed logger to the multilogger. */
+    m_pLogger = std::make_shared<MultiLogger>();
+    m_pLogger->AddLogger(pLogger);
+
     /* Read and dcrypt headers. */
-    NintendoAesXtsDecryptor headerDec(g_HeaderKey[isDev][0], 0x20, 0x200);
+    NintendoAesXtsDecryptor headerDec(GetNcaHeaderKey(isDev), 0x20, 0x200);
     int fsHeaderCount = 0;
     {
         /* Read in the main header. */
@@ -64,7 +68,7 @@ NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t nca
         /* Read in fs headers until we reach an invalid entry. */
         int idx = 0;
         while (fsHeaderCount < 4 && m_mainHeader.fsEntries[fsHeaderCount].endBlock != 0) {
-            LOG("Reading fsHeader {}\n", fsHeaderCount);
+            m_pLogger->print("Reading fsHeader {}\n", fsHeaderCount);
 
             /* Read a header. */
             err = m_pImageStorage->Read(&m_fsHeaders[fsHeaderCount], ncaOffset + fsHeaderCount * 0x200 + 0x400, sizeof(m_fsHeaders[0]));
@@ -86,7 +90,7 @@ NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t nca
     }
 
     m_fsHeaderCount = fsHeaderCount;
-    LOG("Section Counter: {}\n", m_fsHeaderCount);
+    m_pLogger->print("Section Counter: {}\n", m_fsHeaderCount);
 
     /* Printout the headers. */
     //m_mainHeader.Print();
@@ -104,10 +108,11 @@ NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t nca
     /* Open the log file. */
     {
         std::string logPath = this->CreateOutFilePath(".txt");
-        m_logFile = std::fopen(logPath.c_str(), "w");
-        if (m_logFile == nullptr) {
+        FILE* logFile = std::fopen(logPath.c_str(), "w");
+        if (logFile == nullptr) {
             throw DumperException("Failed to open log file '{}'", logPath);
         }
+        m_pLogger->AddLogger(std::make_shared<StdLogger>(logFile, true));
     }
 
     /* Derive the AES-CTR section key. */
@@ -116,21 +121,16 @@ NcaProcessor::NcaProcessor(std::shared_ptr<IStorage> pImageStorage, uint64_t nca
     /* Open the NCA file. */
     {
         std::string ncaPath = this->CreateOutFilePath(".nca");
-        m_ncaFile = std::fopen(ncaPath.c_str(), "w+b");
+        m_ncaFile = std::fopen(ncaPath.c_str(), "r+b");
         if (m_ncaFile == nullptr) {
             throw DumperException("Failed to create NCA file '{}'", ncaPath);
         }
         m_pNcaStorage = std::make_shared<FileStorage>(m_ncaFile);
     }
-
-    /* Setup the logger. */
-    m_logger.emplace(stdout, m_logFile);
-    m_logOutput = m_logger->GetFile();
 }
 
 NcaProcessor::~NcaProcessor() {
     std::fclose(m_ncaFile);
-    std::fclose(m_logFile);
 }
 
 void NcaProcessor::CopyContiguous() {
@@ -159,7 +159,7 @@ void NcaProcessor::Process() {
     /* Process each section. */
     u64 recStartOffset = m_ncaOffset + m_mainHeader.fsEntries[order[0]].startBlock * NCA_BLOCK_SIZE;
     for (int i : order) {
-        std::print(m_logOutput, "Processing section {}\n", i);
+        m_pLogger->print("Processing section {}\n", i);
 
         FsHeader& fsHeader = m_fsHeaders[i];
         FsEntry& fsEntry   = m_mainHeader.fsEntries[i];
@@ -168,17 +168,17 @@ void NcaProcessor::Process() {
         const u64 sectionStart = infoReader.GetStartOffset();
         const u64 sectionSize  = infoReader.GetSize();
 
-        std::print(m_logOutput, "start: {:x}; size: {:x}\n", sectionStart, sectionSize);
+        m_pLogger->print("start: {:x}; size: {:x}\n", sectionStart, sectionSize);
 
         /* Setup section sub storage. */
         auto pSectRawStorage = std::make_shared<SubStorage>(m_pNcaStorage, sectionStart, sectionSize);
 
         /* Require sections to start and end at multiples of FAT cluster size. */
         if (sectionStart % CLUSTER_SIZE) {
-            std::print(m_logOutput, "Sections must start at multiples of the FAT cluster size. Aborting.\n");
+            m_pLogger->print("Sections must start at multiples of the FAT cluster size. Aborting.\n");
             //continue;
         } else if (sectionSize % CLUSTER_SIZE) {
-            std::print(m_logOutput, "Section sizes must be multiples of the FAT cluster size. Aborting.\n");
+            m_pLogger->print("Section sizes must be multiples of the FAT cluster size. Aborting.\n");
             //continue;
         }
 
@@ -198,31 +198,32 @@ void NcaProcessor::Process() {
             pSectDecStorage = std::make_shared<AesCtrStorage>(pSectRawStorage, m_aesCtrKey, sizeof(m_aesCtrKey), iv, sizeof(iv));
             break;
         default:
-            std::print(m_logOutput, "Unsupported encryption type.\n");
+            m_pLogger->print("Unsupported encryption type.\n");
             continue;
         }
 
         /* Process section. */
-        auto pProcessor = this->CreateSectionProcessor(infoReader, std::move(pSectRawStorage), std::move(pSectDecStorage), std::move(pSecBlockDec));
+
         RecoveredList rec;
         bool result;
         try {
+            auto pProcessor = this->CreateSectionProcessor(infoReader, std::move(pSectRawStorage), std::move(pSectDecStorage), std::move(pSecBlockDec));
             result = pProcessor->Process(&rec, recStartOffset);
         } catch(std::exception& excpt) {
-            std::print(m_logOutput, "{}\n", excpt.what());
+            m_pLogger->print("{}\n", excpt.what());
             result = false;
         }
 
         if (result) {
-            std::print(m_logOutput, "Successfully recovered section {}\n", i);
+            m_pLogger->print("Successfully recovered section {}\n", i);
         } else {
-            std::print(m_logOutput, "Failed to fully recover section {}\n", i);
+            m_pLogger->print("Failed to fully recover section {}\n", i);
         }
 
         /* Update the main recovered list. */
         m_recovered.splice(m_recovered.cend(), std::move(rec));
 
-        std::print(m_logOutput, "Section {} end.\n", i);
+        m_pLogger->print("Section {} end.\n", i);
     }
 
     /* Coalesce the recovered list (it should already be sorted). */
@@ -241,10 +242,10 @@ std::unique_ptr<ISectionProcessor> NcaProcessor::CreateSectionProcessor(SectionI
     std::unique_ptr<ISectionProcessor> pProcessor = nullptr;
     switch(infoReader.GetHashType()) {
     case FsHeader::HashType::HierarchicalSha256Hash:
-        pProcessor = std::make_unique<HISha256Processor>(this, infoReader, m_pImageStorage, std::move(pRawSect), std::move(pDecSect), std::move(pDecryptor), m_logOutput);
+        pProcessor = std::make_unique<HISha256Processor>(this, infoReader, m_pImageStorage, std::move(pRawSect), std::move(pDecSect), std::move(pDecryptor), m_pLogger);
         break;
     case FsHeader::HashType::HierarchicalIntegrityHash:
-        pProcessor = std::make_unique<IvfcSectionProcessor>(this, infoReader, m_pImageStorage, std::move(pRawSect), std::move(pDecSect), std::move(pDecryptor), m_logOutput);
+        pProcessor = std::make_unique<IvfcSectionProcessor>(this, infoReader, m_pImageStorage, std::move(pRawSect), std::move(pDecSect), std::move(pDecryptor), m_pLogger);
         break;
     default:
         break;
