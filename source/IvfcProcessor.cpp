@@ -6,6 +6,7 @@
 #include <vector>
 #include "BlockRecoverer.h"
 #include "Common.h"
+#include "IBlockVerifier.h"
 #include "ProgressBar.h"
 #include "Sha256.h"
 #include "SubDecryptor.h"
@@ -13,6 +14,50 @@
 #include "Util.h"
 
 using namespace std::chrono_literals;
+
+namespace {
+
+class IvfcBlockVerifier : public IBlockVerifier {
+public:
+    IvfcBlockVerifier(size_t blockSize) : m_blockSize(blockSize), m_processed(0) {}
+
+    void Reset() override {
+        /* Reset everything. */
+        m_hash.Start();
+        m_processed = 0;
+    }
+
+    void Update(const void* pData, size_t dataSize) override {
+        /* Update the hash. */
+        m_hash.Update(pData, dataSize);
+
+        /* Advance processed count. */
+        m_processed += dataSize;
+        assert(m_processed <= m_blockSize);
+    }
+
+    bool Finish(const void* pHash, size_t hashSize) override {
+        assert(hashSize == sizeof(Sha256::Hash));
+
+        /* Pad with zeros if needed. */
+        if (m_processed < m_blockSize) {
+            std::vector<std::byte> tmp(m_blockSize - m_processed);
+            std::memset(tmp.data(), 0, tmp.size());
+            m_hash.Update(tmp.data(), tmp.size());
+        }
+
+        /* Complete the hash. */
+        Sha256::Hash hash;
+        m_hash.Finish(&hash);
+        return std::memcmp(&hash, pHash, sizeof(hash)) == 0;
+    }
+private:
+    Sha256 m_hash;
+    size_t m_blockSize;
+    size_t m_processed;
+};
+
+} // namespace
 
 void IvfcSectionProcessor::HashDataReader::Validate() const {
     /* Sanity checks... */
@@ -69,16 +114,28 @@ IvfcSectionProcessor::IvfcSectionProcessor(NcaProcessor* pParent, SectionInfoRea
 
     /* Setup sub storages and sub decryptors for each level. */
     for (int i = 0; i < LevelCount; i++) {
-        const auto& levelInfo = m_hashData[i];
-        m_levelRawStorage[i] = SubStorage(m_pRawStorage.get(), levelInfo.offset, levelInfo.size);
-        m_levelDecStorage[i] = SubStorage(m_pDecStorage.get(), levelInfo.offset, levelInfo.size);
-        m_levelDecryptor[i]  = SubDecryptor(m_pDecryptor.get(), levelInfo.offset);
+        /* Get header info. */
+        const auto& hdrInfo = m_hashData[i];
+
+        /* Setup level info. */
+        LevelInfo li {
+            .offset    = static_cast<u64>(hdrInfo.offset),
+            .size      = static_cast<u64>(hdrInfo.size),
+            .blockSize = static_cast<u64>(1u) << hdrInfo.blockOrder
+        };
+        m_levelInfo[i] = li;
+
+        /* Create level storages. */
+        m_levelRawStorage[i] = SubStorage(m_pRawStorage.get(), li.offset, li.size);
+        m_levelDecStorage[i] = SubStorage(m_pDecStorage.get(), li.offset, li.size);
+        m_levelDecryptor[i]  = SubDecryptor(m_pDecryptor.get(), li.offset);
     }
 }
 
 std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, const std::vector<Sha256::Hash>& hashes, SubStorage* pDataStorage) {
     /* Get block count. */
-    const u64 dataSize = m_hashData[level].size;
+    const u64 dataSize  = m_levelInfo[level].size;
+    const u64 blockSize = m_levelInfo[level].blockSize;
 
     //FLOG_VERBOSE(m_logFile, "Data Size: 0x{:x}\n", dataSize);
 
@@ -93,6 +150,9 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
     std::this_thread::sleep_for(100ms); // race condition hack
     PrintProgressBar(0.0);
 
+    /* Create a verifier. */
+    auto pVerif = std::make_shared<IvfcBlockVerifier>(blockSize);
+
     u64 offset       = 0;
     u64 remaining    = dataSize;
     u64 corruptCount = 0;
@@ -103,7 +163,7 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
     while (remaining > 0) {
         const u64 dataRead = std::min(remaining, levelData.size());
 
-        /* Read data from the data level. */
+        /* Read from the data level. */
         error = pDataStorage->Read(levelData.data(), offset, dataRead);
         if (error != ErrorCode::Success) {
             throw DumperException("Failed to read level data: {}\n", ErrorCodeToString(error));
@@ -114,19 +174,15 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
         const u64 barUpdateRate = dataRead < (128 * CLUSTER_SIZE) ? dataRead : dataRead / (128 * CLUSTER_SIZE);
 
         for (u64 i = 0; i < dataRead; i += CLUSTER_SIZE) {
-            /* Zero pad the block if needed. */
-            if (remaining < m_blockSize) {
-                std::memset(&levelData[remaining], 0, m_blockSize - remaining);
-            }
+            /* Determine comparison size. */
+            const u64 compareSize = std::min(blockSize, dataSize - offset);
 
-            /* Calculate the current block's hash. */
-            Sha256::Hash shaHash;
-            const u64 compareSize = std::min(m_blockSize, dataSize - offset);
-            ComputeSha256Sum(&shaHash, &levelData[i], m_blockSize);
+            /* Get the target hash. */
+            const auto& targetHash = hashes[offset / blockSize];
 
             /* Compare the hash with the expected one. */
-            const u64 recSize = std::min(remaining, m_blockSize);
-            if (std::memcmp(&shaHash, &hashes[offset / CLUSTER_SIZE], Sha256::Hash::Size)) {
+            const u64 recSize = std::min(remaining, blockSize);
+            if (!pVerif->Verify(&levelData[i], compareSize, &targetHash, Sha256::Hash::Size)) {
                 ClearProgressBar();
                 m_pLogger->print("Offset 0x{:x} in level {} corrupt.\n", offset, level);
 
@@ -169,7 +225,7 @@ std::list<Extents<u64>> IvfcSectionProcessor::ScanForCorruptBlocks(int level, co
 
 bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoveryStartOffset) {
     /* Read the first level. */
-    std::vector<std::byte> level0Data(m_hashData[0].size);
+    std::vector<std::byte> level0Data(m_levelInfo[0].size);
     m_levelDecStorage->Read(level0Data.data(), 0, level0Data.size());
     
     /* Query the target section's start offset. */
@@ -200,7 +256,8 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
             &m_levelDecryptor[0],
             m_blockSize,
             0,
-            sectionStart + m_hashData[0].offset,
+            sectionStart + m_levelInfo[0].offset,
+            std::make_shared<IvfcBlockVerifier>(m_levelInfo[0].blockSize),
             m_pLogger
         );
         if (recover.Recover(&rec, std::move(records), mHash) == 0) {
@@ -220,8 +277,8 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
     for (int i = 0; i < FsHeader::IntegrityMetaInfo::NumberOfLevels - 1; i++) {
         m_pLogger->print("Scanning level {} using level {} hashes.\n", i+1, i);
 
-        const auto& hashLevelInfo = m_hashData[i];
-        const auto& dataLevelInfo = m_hashData[i+1];
+        const auto& hashLevelInfo = m_levelInfo[i];
+        const auto& dataLevelInfo = m_levelInfo[i+1];
 
         /* Read the hashes. */
         auto hashes = this->ReadHashes(i);
@@ -243,6 +300,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
                 m_blockSize,
                 m_sectInfo.GetMisalignment(),
                 sectionStart + hashLevelInfo.offset,
+                std::make_shared<IvfcBlockVerifier>(dataLevelInfo.blockSize),
                 m_pLogger
             );
             
@@ -274,7 +332,7 @@ bool IvfcSectionProcessor::Process(RecoveredList* pRecoveredList, u64 recoverySt
 std::vector<Sha256::Hash> IvfcSectionProcessor::ReadHashes(int level) {
     assert(level < LevelCount - 1);
 
-    const auto& info = m_hashData[level+1];
+    const auto& info = m_levelInfo[level+1];
     u64 count = AlignUp(static_cast<u64>(info.size), m_blockSize) / m_blockSize;
 
     std::vector<Sha256::Hash> hashes(count);

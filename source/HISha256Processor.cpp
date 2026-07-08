@@ -1,6 +1,7 @@
 #include "HISha256Processor.h"
 #include "BlockRecoverer.h"
 #include "Common.h"
+#include "IBlockVerifier.h"
 #include "ErrorCode.h"
 #include "NcaHeaders.h"
 #include "NcaProcessor.h"
@@ -15,6 +16,37 @@
 #include <thread>
 
 using namespace std::chrono_literals;
+
+namespace {
+
+class H256BlockVerifier : public IBlockVerifier {
+public:
+    H256BlockVerifier(size_t blockSize) : m_blockSize(blockSize) {}
+
+    void Reset() override {
+        m_hash.Start();
+    }
+
+    void Update(const void* pData, size_t dataSize) override {
+        m_hash.Update(pData, dataSize);
+    }
+
+    bool Finish(const void* pHash, size_t hashSize) override {
+        assert(hashSize == sizeof(Sha256::Hash));
+
+        /* Finish the hash. */
+        Sha256::Hash hash;
+        m_hash.Finish(&hash);
+
+        /* Compare the hashes. */
+        return std::memcmp(&hash, pHash, sizeof(hash));
+    }
+private:
+    Sha256 m_hash;
+    size_t m_blockSize;
+}; // class H256BlockVerifier
+
+} // namespace
 
 void HISha256Processor::HashDataReader::Validate() const {
     /* Sanity checks... */
@@ -203,6 +235,7 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
             m_hashData[0].size,
             0,
             sectionStart + m_hashData[0].offset,
+            std::make_shared<H256BlockVerifier>(m_blockSize),
             m_pLogger
         );
 
@@ -240,6 +273,7 @@ bool HISha256Processor::Process(RecoveredList* pRecoveredList, u64 recoveryStart
             m_blockSize,
             0,
             sectionStart + m_hashData[1].offset,
+            std::make_shared<H256BlockVerifier>(m_blockSize),
             m_pLogger
         );
         recAll = recover.Recover(&rec, std::move(records), hashes);

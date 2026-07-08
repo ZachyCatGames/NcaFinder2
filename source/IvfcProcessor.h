@@ -23,8 +23,6 @@ public:
 
     bool Process(RecoveredList* pRecoveredList, u64 recoveryStartOffset) override;
 private:
-    using LevelInfo = FsHeader::IntegrityMetaInfo::InfoLevelHash::LevelInfo;
-
     std::list<Extents<u64>> ScanForCorruptBlocks(int level, const std::vector<Sha256::Hash>& hashes, SubStorage* pDataStorage);
 
     std::vector<Sha256::Hash> ReadHashes(int level);
@@ -52,6 +50,12 @@ private:
         const IvfcData* m_pData;
     }; // class HashDataReader
 
+    struct LevelInfo {
+        u64 offset;
+        u64 size;
+        u64 blockSize;
+    };
+
     static constexpr int LevelCount = FsHeader::IntegrityMetaInfo::NumberOfLevels;
 private:
     friend class NcaProcessor;
@@ -71,6 +75,7 @@ private:
     SubStorage m_levelRawStorage[LevelCount];
     SubStorage m_levelDecStorage[LevelCount];
     SubDecryptor m_levelDecryptor[LevelCount];
+    LevelInfo m_levelInfo[LevelCount];
 
     size_t m_imageStorageSize;
 

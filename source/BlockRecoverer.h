@@ -3,6 +3,7 @@
 #include <memory>
 #include <vector>
 #include "Common.h"
+#include "IBlockVerifier.h"
 #include "IDecryptor.h"
 #include "IStorage.h"
 #include "Sha256.h"
@@ -17,7 +18,7 @@ public:
     //using ExtentList = std::list<CorruptBlockInfo>;
 
     BlockRecoverer() : m_pSectionStorage(nullptr) {}
-    BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pDecryptor, u64 blockSize, u64 blockOffset, u64 imageStartOffset, const std::shared_ptr<Logger> pLogger);
+    BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pDecryptor, u64 blockSize, u64 blockOffset, u64 imageStartOffset, const std::shared_ptr<IBlockVerifier>& pVerifier, const std::shared_ptr<Logger> pLogger);
 
     bool Recover(RecoveredList* recoveredList, const ExtentList& missing, const std::vector<Sha256::Hash>& hashes);
 private:
@@ -117,11 +118,12 @@ private:
     [[nodiscard]] bool IsExpectedNextCluster(u64 v)  const noexcept { return v == m_expectedCluster; }
     [[nodiscard]] bool IsExpectedNextSectAddr(u64 v) const noexcept { return v == m_expectedSecOffs; }
 
-    [[nodiscard]] std::byte* GetWorkBuffer() noexcept { return m_workBuffer.data(); }
-    [[nodiscard]] IDecryptor* GetDecryptor() const noexcept { return m_pDecryptor; }
-    [[nodiscard]] u64 GetStartPieceSize()    const noexcept { return m_startPieceSize; }
-    [[nodiscard]] u64 GetEndPieceSize()      const noexcept { return m_blockSize - m_startPieceSize; }
-    [[nodiscard]] u64 GetSectionSize()       const noexcept { return m_sectionSize; }
+    [[nodiscard]] std::byte* GetWorkBuffer()    noexcept { return m_workBuffer.data(); }
+    [[nodiscard]] IDecryptor* GetDecryptor()    const noexcept { return m_pDecryptor; }
+    [[nodiscard]] IBlockVerifier* GetVerifier() const noexcept { return m_pVerifier.get(); }
+    [[nodiscard]] u64 GetStartPieceSize()       const noexcept { return m_startPieceSize; }
+    [[nodiscard]] u64 GetEndPieceSize()         const noexcept { return m_blockSize - m_startPieceSize; }
+    [[nodiscard]] u64 GetSectionSize()          const noexcept { return m_sectionSize; }
 
     [[nodiscard]] bool IsExpectedNextBlock(u64 blockId, u64 secOffs) const;
 
@@ -159,6 +161,8 @@ private:
     IStorage* m_pImageStorage;
 
     IDecryptor* m_pDecryptor;
+
+    std::shared_ptr<IBlockVerifier> m_pVerifier;
 
     std::vector<std::byte> m_workBuffer;
 

@@ -1,6 +1,7 @@
 #include "BlockRecoverer.h"
 #include "Common.h"
 #include "ErrorCode.h"
+#include "IBlockVerifier.h"
 #include "NcaHeaders.h"
 #include "ProgressBar.h"
 #include "Sha256.h"
@@ -54,17 +55,13 @@ bool BlockRecoverer::FragmentInfo::Compare(std::byte* pEndData) const {
     }
 
     /* Hash both pieces combined. */
-    Sha256 sha;
-    Sha256::Hash hash;
-    sha.Start();
-    sha.Update(m_startData.data(), m_startData.size());
-    sha.Update(pWorkBuf, static_cast<size_t>(endSize));
-    sha.Finish(&hash);
+    IBlockVerifier* pVerif = m_pParent->GetVerifier();
+    pVerif->Start(m_startData.data(), m_startData.size());
+    pVerif->Update(pWorkBuf, static_cast<size_t>(endSize));
 
-    //PrintKey("cringe", &hash, 0x20);
+    /* Check the result. */
+    return pVerif->Finish(&m_hash, sizeof(m_hash));
 
-    /* Check if the hash matches. */
-    return std::memcmp(&m_hash, &hash, sizeof(Sha256::Hash)) == 0;
 }
 
 auto BlockRecoverer::FragmentInfo::AddPostExtentToMissingList() const {
@@ -72,10 +69,11 @@ auto BlockRecoverer::FragmentInfo::AddPostExtentToMissingList() const {
     return std::prev(m_pParent->m_missing.cend());
 }
 
-BlockRecoverer::BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pSecBlockDec, u64 blockSize, u64 blockOffset, u64 imageStartOffset, const std::shared_ptr<Logger> pLogger) :
+BlockRecoverer::BlockRecoverer(IStorage* pSectStorage, IStorage* pImageStorage, IDecryptor* pSecBlockDec, u64 blockSize, u64 blockOffset, u64 imageStartOffset, const std::shared_ptr<IBlockVerifier>& pVerifier, const std::shared_ptr<Logger> pLogger) :
     m_pSectionStorage(pSectStorage),
     m_pImageStorage(pImageStorage),
     m_pDecryptor(pSecBlockDec),
+    m_pVerifier(pVerifier),
     m_pLogger(pLogger),
     m_blockSize(blockSize),
     m_blockOffset(blockOffset),
@@ -295,18 +293,15 @@ int BlockRecoverer::AnalyzeBlock(const std::byte* pBlock, u64 clusterId) {
             std::memset(&m_workBuffer[m_sectionSize - start], 0, end - m_sectionSize);
         }
 
-        /* Check its sha256 hash. */
-        Sha256::Hash shaHash;
+        /* Determine comparison size. */
         const u64 compareSize = std::min(size, m_blockSize);
-        ComputeSha256Sum(&shaHash, m_workBuffer.data(), compareSize);
-        if (compareSize != m_blockSize) {
-            m_pLogger->print("Hello!\n");
-        }
+
+        /* Get the target hash. */
+        const auto& targetHash = this->GetHashForOffset(start);
 
         /* Does it match the target hash? */
         auto nextRec = std::next(rec);;
-        const auto& targetHash = this->GetHashForOffset(start);
-        if (!std::memcmp(&shaHash, &targetHash, sizeof(shaHash))) {
+        if (m_pVerifier->Verify(m_workBuffer.data(), compareSize, &targetHash, sizeof(targetHash))) {
             /* Log that we recovered a block. */
             m_pLogger->print("Recovered 0x{:x} from image offset 0x{:x}\n", start, clusterId * CLUSTER_SIZE);
             
